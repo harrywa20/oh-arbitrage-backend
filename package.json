@@ -1,0 +1,20 @@
+{
+  "name": "oh-arbitrage-system-server",
+  "version": "1.0.0",
+  "description": "Backend API + Telegram broadcast + daily digest cron for the OH Arbitrage Data Entry System",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3"
+  }
+}
