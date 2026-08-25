@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OH Arbitrage System</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  body { background:#12151C; color:#EDEEF0; font-family:'Inter',sans-serif; margin:0; }
+  .font-display { font-family:'Barlow Condensed',sans-serif; letter-spacing:.02em; }
+  .font-mono { font-family:'IBM Plex Mono',monospace; }
+  input, select, textarea { background:#0D0F14; border:1px solid #2A3040; color:#EDEEF0; border-radius:6px; padding:6px 10px; font-size:13px; }
+  input:focus, select:focus, textarea:focus { outline:2px solid #E8A33D; outline-offset:1px; }
+  table { border-collapse: collapse; }
+  ::-webkit-scrollbar { height:8px; width:8px; }
+  ::-webkit-scrollbar-thumb { background:#2A3040; border-radius:4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useCallback } = React;
+
+const API_BASE = ""; // same origin - served by this same backend, no CORS needed
+
+const REGIONS = ["Northeast", "Southeast", "Midwest", "West"];
+const CATEGORIES = ["Sports", "Concert", "Other"];
+const PRIORITIES = ["High", "Standard"];
+const STATUSES = ["Needs Research", "Needs Pricing", "Priced", "Confirmed", "Stale"];
+const PLATFORMS = [
+  { key: "spothero_price", label: "SpotHero" },
+  { key: "parkwhiz_price", label: "ParkWhiz" },
+  { key: "parkingcom_price", label: "Parking.com" },
+  { key: "parkmobile_price", label: "ParkMobile" },
+];
+
+function todayMDY() {
+  const d = new Date();
+  return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}/${d.getFullYear()}`;
+}
+function money(n) { return n === null || n === undefined ? "—" : `$${Number(n).toFixed(2)}`; }
+function blankEvent() {
+  return { region: REGIONS[0], state: "", venue: "", venue_city: "", event_name: "", event_category: CATEGORIES[0],
+    event_date: "", listing_date: todayMDY(), analyst: "", priority: "Standard", stubhub_lot_name: "",
+    stubhub_price: "", spothero_price: "", parkwhiz_price: "", parkingcom_price: "", parkmobile_price: "",
+    location_notes: "", source_url: "", status: "Needs Research", notes: "" };
+}
+function isResaleDomain(url) {
+  const flagged = ["stubhub", "vividseats", "seatgeek", "ticketsnow", "razorgator"];
+  try { return flagged.some((f) => new URL(url).hostname.toLowerCase().includes(f)); } catch { return false; }
+}
+
+async function apiCall(token, path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) },
+  });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok) { const err = new Error(data?.error || `Request failed (${res.status})`); err.status = res.status; throw err; }
+  return data;
+}
+
+function Icon({ name, size = 15, className = "" }) {
+  const map = { plus: "＋", filter: "⏷", download: "⬇", upload: "⬆", settings: "⚙", dashboard: "▦", table: "▤",
+    add: "＋", dollar: "$", copy: "⧉", check: "✓", trend_up: "↗", trend_down: "↘", minus: "−", alert: "⚠",
+    logout: "⏻", spin: "◐" };
+  return <span className={`inline-block ${className}`} style={{ fontSize: size, lineHeight: 1 }}>{map[name] || "•"}</span>;
+}
+
+function TicketCard({ children, className = "" }) {
+  return (
+    <div className={`relative bg-[#1B2028] border border-[#2A3040] rounded-lg ${className}`}>
+      <div className="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#0D0F14] border border-[#2A3040]" />
+      <div className="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-[#0D0F14] border border-[#2A3040]" />
+      {children}
+    </div>
+  );
+}
+function PriorityBadge({ priority }) {
+  return <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wide font-mono ${priority === "High" ? "bg-[#E8A33D] text-[#12151C]" : "bg-[#2A3040] text-[#9AA5B8]"}`}>{priority === "High" ? "HIGH" : "STD"}</span>;
+}
+function SpreadTag({ dollar, percent }) {
+  if (dollar === null || dollar === undefined) return <span className="text-[#5A6472] font-mono text-sm">—</span>;
+  const iconName = dollar > 0 ? "trend_up" : dollar < 0 ? "trend_down" : "minus";
+  return <span className={`inline-flex items-center gap-1 font-mono text-sm ${dollar > 0 ? "text-[#4CAF6D]" : dollar < 0 ? "text-[#E85D5D]" : "text-[#9AA5B8]"}`}><Icon name={iconName} size={13} />{money(dollar)} ({percent !== null && percent !== undefined ? Number(percent).toFixed(1) : "—"}%)</span>;
+}
+function EmptyState({ text }) { return <div className="border border-dashed border-[#2A3040] rounded-lg p-8 text-center text-sm text-[#5A6472]">{text}</div>; }
+function Field({ label, children, full }) {
+  return <div className={full ? "col-span-2" : ""}><label className="block text-xs text-[#9AA5B8] mb-1 font-mono">{label}</label>{children}</div>;
+}
+
+function Login({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setError(""); setLoading(true);
+    try {
+      const data = await apiCall(null, "/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      onLogin(data.token, data.user);
+    } catch (err) {
+      setError(err.message === "Failed to fetch" ? "Couldn't reach the server." : err.message);
+    } finally { setLoading(false); }
+  };
+  const onKeyDown = (e) => { if (e.key === "Enter") submit(); };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <h1 className="font-display text-3xl font-bold text-center mb-1">OH <span className="text-[#E8A33D]">ARBITRAGE</span></h1>
+        <p className="text-center text-xs text-[#5A6472] font-mono mb-6">sign in to your account</p>
+        <TicketCard className="p-6">
+          <div className="space-y-4">
+            <Field label="Email"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={onKeyDown} className="w-full" /></Field>
+            <Field label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={onKeyDown} className="w-full" /></Field>
+            {error && <div className="flex items-center gap-1.5 text-[#E85D5D] text-xs"><Icon name="alert" size={13} /> {error}</div>}
+            <button type="button" onClick={submit} disabled={loading || !email || !password} className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-sm disabled:opacity-50">
+              {loading ? "Signing in…" : "Sign in"}
+            </button>
+          </div>
+        </TicketCard>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [token, setToken] = useState(null);
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState("log");
+  const [events, setEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [filters, setFilters] = useState({ region: "", state: "", priority: "", status: "", category: "" });
+  const [toast, setToast] = useState(null);
+  const [apiError, setApiError] = useState("");
+
+  const showToast = useCallback((msg, kind = "info") => { setToast({ msg, kind }); setTimeout(() => setToast(null), 4000); }, []);
+
+  const refreshEvents = useCallback(async () => {
+    if (!token) return;
+    setLoadingEvents(true); setApiError("");
+    try {
+      const params = new URLSearchParams();
+      Object.entries(filters).forEach(([k, v]) => v && params.set(k, v));
+      const qs = params.toString();
+      const data = await apiCall(token, `/api/events${qs ? `?${qs}` : ""}`);
+      setEvents(data);
+    } catch (err) { setApiError(err.message); } finally { setLoadingEvents(false); }
+  }, [token, filters]);
+
+  useEffect(() => { refreshEvents(); }, [refreshEvents]);
+
+  const handleLogin = (tok, u) => { setToken(tok); setUser(u); };
+  const logout = () => { setToken(null); setUser(null); setEvents([]); };
+
+  const addEvent = useCallback(async (ev) => {
+    const created = await apiCall(token, "/api/events", { method: "POST", body: JSON.stringify(ev) });
+    await refreshEvents();
+    return created;
+  }, [token, refreshEvents]);
+
+  const bulkImport = useCallback(async (rows) => {
+    await apiCall(token, "/api/events/import", { method: "POST", body: JSON.stringify({ rows }) });
+    await refreshEvents();
+  }, [token, refreshEvents]);
+
+  const updateEvent = useCallback(async (id, patch) => {
+    const updated = await apiCall(token, `/api/events/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    setEvents((prev) => prev.map((e) => (e.id === id ? updated : e)));
+    return updated;
+  }, [token]);
+
+  const handleStatusChange = useCallback(async (ev, newStatus) => {
+    try {
+      await updateEvent(ev.id, { status: newStatus });
+      if (newStatus === "Priced") showToast("Marked Priced — Telegram alert sent automatically if spread qualifies", "success");
+    } catch (err) { showToast(err.message, "error"); }
+  }, [updateEvent, showToast]);
+
+  if (!token) return <Login onLogin={handleLogin} />;
+
+  return (
+    <div className="min-h-screen">
+      <Header view={view} setView={setView} user={user} onLogout={logout} />
+      <main className="max-w-[1400px] mx-auto px-5 py-6">
+        {apiError && <div className="mb-4 flex items-center gap-2 text-[#E85D5D] text-sm bg-[#3A2020] border border-[#E85D5D]/40 rounded-md px-3 py-2"><Icon name="alert" size={15} /> {apiError}</div>}
+        {view === "dashboard" && <Dashboard token={token} events={events} />}
+        {view === "log" && <EventLog events={events} loading={loadingEvents} filters={filters} setFilters={setFilters} onStatusChange={handleStatusChange} onImport={bulkImport} showToast={showToast} />}
+        {view === "add" && <AddEventForm defaultAnalyst={user?.email} onAdd={async (ev) => { try { await addEvent(ev); showToast("Event added", "success"); setView("log"); } catch (err) { showToast(err.message, "error"); } }} />}
+        {view === "research" && <ResearchPanel token={token} onAccept={bulkImport} showToast={showToast} />}
+        {view === "pricing" && <PricingEntry events={events} onUpdate={updateEvent} onStatusChange={handleStatusChange} showToast={showToast} />}
+        {view === "settings" && user?.role === "admin" && <SettingsPanel token={token} showToast={showToast} />}
+        {view === "settings" && user?.role !== "admin" && <EmptyState text="Settings are admin-only." />}
+      </main>
+      {toast && <div className={`fixed bottom-5 right-5 px-4 py-3 rounded-lg font-mono text-sm shadow-lg border ${toast.kind === "success" ? "bg-[#1F3A2E] border-[#4CAF6D] text-[#4CAF6D]" : toast.kind === "error" ? "bg-[#3A2020] border-[#E85D5D] text-[#E85D5D]" : "bg-[#1B2028] border-[#2A3040] text-[#EDEEF0]"}`}>{toast.msg}</div>}
+    </div>
+  );
+}
+
+function Header({ view, setView, user, onLogout }) {
+  const tabs = [
+    { id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "log", label: "Event Log", icon: "table" },
+    { id: "add", label: "Add Event", icon: "add" }, { id: "research", label: "Research", icon: "filter" },
+    { id: "pricing", label: "Pricing Entry", icon: "dollar" }, { id: "settings", label: "Settings", icon: "settings" },
+  ];
+  return (
+    <header className="border-b border-[#2A3040] bg-[#0D0F14] sticky top-0 z-10">
+      <div className="max-w-[1400px] mx-auto px-5 pt-4 flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-wide">OH <span className="text-[#E8A33D]">ARBITRAGE</span> SYSTEM</h1>
+          <p className="text-[11px] text-[#5A6472] font-mono -mt-1">{user?.email} · role: {user?.role}{user?.region ? ` · ${user.region}` : ""}</p>
+        </div>
+        <button onClick={onLogout} className="flex items-center gap-1.5 text-xs text-[#9AA5B8] hover:text-[#E85D5D] font-mono"><Icon name="logout" size={14} /> Sign out</button>
+      </div>
+      <nav className="max-w-[1400px] mx-auto px-5 flex gap-1 mt-3 overflow-x-auto">
+        {tabs.map((t) => (
+          <button key={t.id} onClick={() => setView(t.id)} className={`flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border-b-2 whitespace-nowrap ${view === t.id ? "border-[#E8A33D] text-[#E8A33D]" : "border-transparent text-[#9AA5B8] hover:text-[#EDEEF0]"}`}>
+            <Icon name={t.icon} size={14} /> {t.label}
+          </button>
+        ))}
+      </nav>
+    </header>
+  );
+}
+
+function Dashboard({ token, events }) {
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try { setSummary(await apiCall(token, "/api/events/dashboard/summary")); } catch { setSummary(null); } finally { setLoading(false); }
+    })();
+  }, [token, events]);
+  if (loading) return <div className="text-[#5A6472] font-mono text-sm">Loading dashboard…</div>;
+  if (!summary) return <EmptyState text="Couldn't load dashboard summary." />;
+  const byRegion = REGIONS.map((r) => ({ region: r, count: events.filter((e) => e.region === r).length }));
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Events Tracked" value={summary.total} />
+        <StatCard label="Needing Pricing" value={`${summary.pctNeedingPricing}%`} sub={`${summary.needingPricing} events`} />
+        <StatCard label="Avg Spread" value={`${summary.avgSpreadPercent.toFixed(1)}%`} />
+        <StatCard label="High Priority" value={summary.highPriorityCount} />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2">
+          <h2 className="font-display text-xl mb-3 text-[#E8A33D]">TOP OPPORTUNITIES</h2>
+          {summary.topOpportunities.length === 0 ? <EmptyState text="No priced events with a positive spread yet." /> : (
+            <div className="space-y-2">
+              {summary.topOpportunities.map((e) => (
+                <TicketCard key={e.id} className="px-4 py-3 flex items-center justify-between">
+                  <div><div className="font-medium text-sm">{e.event_name}</div><div className="text-xs text-[#9AA5B8] font-mono">{e.venue} · {e.state} · {e.event_date}</div></div>
+                  <SpreadTag dollar={e.arbitrage_spread_dollar} percent={e.arbitrage_spread_percent} />
+                </TicketCard>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <h2 className="font-display text-xl mb-3 text-[#E8A33D]">BY REGION</h2>
+          <div className="space-y-2">
+            {byRegion.map((r) => (
+              <div key={r.region} className="flex items-center gap-2">
+                <span className="text-xs w-24 text-[#9AA5B8] font-mono">{r.region}</span>
+                <div className="flex-1 h-2 bg-[#1B2028] rounded overflow-hidden"><div className="h-full bg-[#E8A33D]" style={{ width: `${events.length ? (r.count / events.length) * 100 : 0}%` }} /></div>
+                <span className="text-xs font-mono text-[#5A6472] w-6 text-right">{r.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function StatCard({ label, value, sub }) {
+  return <TicketCard className="px-4 py-3"><div className="text-[11px] text-[#5A6472] font-mono uppercase tracking-wide">{label}</div><div className="font-display text-3xl font-bold mt-1">{value}</div>{sub && <div className="text-xs text-[#9AA5B8] mt-0.5">{sub}</div>}</TicketCard>;
+}
+
+function EventLog({ events, loading, filters, setFilters, onStatusChange, onImport, showToast }) {
+  const exportResearchFormat = () => {
+    const headers = ["Listing Date","Event","Event Date","Event Venue","Venue City/State","Location/Facility","Buying Price at SpotHero","Buying Price at ParkWhiz","Buying Price at Parking.com","Buying Price at ParkMobile","StubHub Competitor Price"];
+    const na = (v) => (v === "" || v === null || v === undefined ? "N/A" : v);
+    const rows = events.map((e) => ({ "Listing Date": e.listing_date, Event: e.event_name, "Event Date": e.event_date, "Event Venue": e.venue,
+      "Venue City/State": [e.venue_city, e.state].filter(Boolean).join(", "), "Location/Facility": e.location_notes,
+      "Buying Price at SpotHero": na(e.spothero_price), "Buying Price at ParkWhiz": na(e.parkwhiz_price),
+      "Buying Price at Parking.com": na(e.parkingcom_price), "Buying Price at ParkMobile": na(e.parkmobile_price), "StubHub Competitor Price": na(e.stubhub_price) }));
+    const csv = Papa.unparse({ fields: headers, data: rows });
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "oh-arbitrage-research-format.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+  const exportAll = () => {
+    const csv = Papa.unparse(events);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "oh-arbitrage-events.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+  const importCsv = (file) => {
+    Papa.parse(file, { header: true, complete: async (res) => {
+      const rows = res.data.filter((r) => r.venue || r.event_name);
+      try { await onImport(rows); showToast(`Imported ${rows.length} events`, "success"); } catch (err) { showToast(err.message, "error"); }
+    }});
+  };
+  const rowColor = (e) => {
+    if (e.arbitrage_spread_percent === null || e.arbitrage_spread_percent === undefined) return "bg-[#3D3420]/20";
+    if (e.arbitrage_spread_percent > 0) return "bg-[#1F3A2E]/30";
+    return "bg-[#1B2028]";
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <FilterSelect value={filters.region} onChange={(v) => setFilters({ ...filters, region: v })} options={REGIONS} placeholder="Region" />
+        <input placeholder="State (e.g. CA)" value={filters.state} onChange={(e) => setFilters({ ...filters, state: e.target.value })} className="w-28" />
+        <FilterSelect value={filters.priority} onChange={(v) => setFilters({ ...filters, priority: v })} options={PRIORITIES} placeholder="Priority" />
+        <FilterSelect value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })} options={STATUSES} placeholder="Status" />
+        <FilterSelect value={filters.category} onChange={(v) => setFilters({ ...filters, category: v })} options={CATEGORIES} placeholder="Category" />
+        <div className="flex-1" />
+        <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#1B2028] border border-[#2A3040] text-sm cursor-pointer hover:border-[#E8A33D]"><Icon name="upload" size={14} /> Import<input type="file" accept=".csv" className="hidden" onChange={(e) => e.target.files[0] && importCsv(e.target.files[0])} /></label>
+        <button onClick={exportAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#1B2028] border border-[#2A3040] text-sm hover:border-[#E8A33D]"><Icon name="download" size={14} /> Export (All Fields)</button>
+        <button onClick={exportResearchFormat} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#1B2028] border border-[#2A3040] text-sm hover:border-[#E8A33D]"><Icon name="download" size={14} /> Export (Research Format)</button>
+      </div>
+      <div className="text-xs text-[#5A6472] font-mono mb-2">{loading ? "Loading…" : `${events.length} events`}</div>
+      <div className="overflow-x-auto border border-[#2A3040] rounded-lg">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-[#0D0F14] text-[#9AA5B8] text-xs font-mono uppercase">{["Priority","Region","State","Venue","Event","Date","Status","StubHub (adj)","Best Buy","Spread","Lot / Notes"].map((h) => <th key={h} className="px-3 py-2 text-left font-medium whitespace-nowrap">{h}</th>)}</tr></thead>
+          <tbody>
+            {events.length === 0 && !loading && <tr><td colSpan={11} className="px-3 py-8 text-center text-[#5A6472]">No events match these filters yet.</td></tr>}
+            {events.map((e) => (
+              <tr key={e.id} className={`border-t border-[#2A3040] ${rowColor(e)}`}>
+                <td className="px-3 py-2"><PriorityBadge priority={e.priority} /></td>
+                <td className="px-3 py-2 whitespace-nowrap">{e.region}</td>
+                <td className="px-3 py-2">{e.state}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{e.venue}{e.venue_city && <div className="text-[10px] text-[#5A6472]">{e.venue_city}</div>}</td>
+                <td className="px-3 py-2 max-w-[220px] truncate" title={e.event_name}>{e.event_name}</td>
+                <td className="px-3 py-2 font-mono whitespace-nowrap">{e.event_date}</td>
+                <td className="px-3 py-2"><select value={e.status} onChange={(ev2) => onStatusChange(e, ev2.target.value)} className="!py-1 !px-2 text-xs">{STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select></td>
+                <td className="px-3 py-2 font-mono whitespace-nowrap">{money(e.stubhub_fee_adjusted_price)}</td>
+                <td className="px-3 py-2 font-mono whitespace-nowrap">{money(e.best_buy_price)}{e.best_buy_platform && <div className="text-[10px] text-[#5A6472]">{e.best_buy_platform}</div>}</td>
+                <td className="px-3 py-2 whitespace-nowrap"><SpreadTag dollar={e.arbitrage_spread_dollar} percent={e.arbitrage_spread_percent} /></td>
+                <td className="px-3 py-2 max-w-[180px] truncate text-[#9AA5B8]" title={e.location_notes}>{e.location_notes}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+function FilterSelect({ value, onChange, options, placeholder }) {
+  return <select value={value} onChange={(e) => onChange(e.target.value)} className="min-w-[110px]"><option value="">{placeholder}</option>{options.map((o) => <option key={o} value={o}>{o}</option>)}</select>;
+}
+
+function AddEventForm({ onAdd, defaultAnalyst }) {
+  const [form, setForm] = useState({ ...blankEvent(), analyst: defaultAnalyst || "" });
+  const [urlWarning, setUrlWarning] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const set = (k, v) => { setForm((f) => ({ ...f, [k]: v })); if (k === "source_url") setUrlWarning(isResaleDomain(v) ? "This looks like a resale/marketplace link, not an official venue/ticketing source." : ""); };
+  const canSubmit = form.region && form.state && form.venue && form.event_name && form.event_date && form.source_url && form.analyst;
+  return (
+    <div className="max-w-2xl">
+      <h2 className="font-display text-2xl mb-4 text-[#E8A33D]">ADD EVENT</h2>
+      <div className="grid grid-cols-2 gap-4">
+        <Field label="Region *"><select value={form.region} onChange={(e) => set("region", e.target.value)}>{REGIONS.map((r) => <option key={r}>{r}</option>)}</select></Field>
+        <Field label="State *"><input value={form.state} maxLength={2} placeholder="CA" onChange={(e) => set("state", e.target.value.toUpperCase())} /></Field>
+        <Field label="Venue *" full><input value={form.venue} onChange={(e) => set("venue", e.target.value)} placeholder="Crypto.com Arena" /></Field>
+        <Field label="Venue City"><input value={form.venue_city} onChange={(e) => set("venue_city", e.target.value)} placeholder="Los Angeles" /></Field>
+        <Field label="Event Name *" full><input value={form.event_name} onChange={(e) => set("event_name", e.target.value)} placeholder="Lakers vs Warriors" /></Field>
+        <Field label="Category"><select value={form.event_category} onChange={(e) => set("event_category", e.target.value)}>{CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select></Field>
+        <Field label="Priority"><select value={form.priority} onChange={(e) => set("priority", e.target.value)}>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></Field>
+        <Field label="Event Date * (MM/DD/YYYY)"><input value={form.event_date} onChange={(e) => set("event_date", e.target.value)} placeholder="09/14/2026" /></Field>
+        <Field label="Analyst *"><input value={form.analyst} onChange={(e) => set("analyst", e.target.value)} placeholder="Your name" /></Field>
+        <Field label="Source URL * (official venue/ticket hub only)" full><input value={form.source_url} onChange={(e) => set("source_url", e.target.value)} placeholder="https://venue.com/events/..." />{urlWarning && <div className="flex items-center gap-1 text-[#E8A33D] text-xs mt-1"><Icon name="alert" size={13} /> {urlWarning}</div>}</Field>
+      </div>
+      <button disabled={!canSubmit || submitting} onClick={async () => { setSubmitting(true); await onAdd(form); setSubmitting(false); }} className="mt-5 flex items-center gap-2 px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold disabled:opacity-40 disabled:cursor-not-allowed">
+        <Icon name="plus" size={16} /> {submitting ? "Adding…" : "Add to Event Log"}
+      </button>
+      <p className="text-xs text-[#5A6472] mt-2">Pricing fields are entered later in Pricing Entry mode.</p>
+    </div>
+  );
+}
+
+function ResearchPanel({ token, onAccept, showToast }) {
+  const [region, setRegion] = useState(REGIONS[0]);
+  const [state, setState] = useState("");
+  const [month, setMonth] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const runResearch = async () => {
+    if (!state || !month) return;
+    setLoading(true); setError(""); setResult(null);
+    try { setResult(await apiCall(token, "/api/research", { method: "POST", body: JSON.stringify({ region, state, month }) })); }
+    catch (err) { setError(err.message); } finally { setLoading(false); }
+  };
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div>
+        <h2 className="font-display text-2xl text-[#E8A33D]">RESEARCH ASSISTANT</h2>
+        <p className="text-sm text-[#9AA5B8] mt-1">Real web search finds venues and confirmed events. Pricing always left blank for manual entry.</p>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Region"><select value={region} onChange={(e) => setRegion(e.target.value)}>{REGIONS.map((r) => <option key={r}>{r}</option>)}</select></Field>
+        <Field label="State"><input value={state} maxLength={2} onChange={(e) => setState(e.target.value.toUpperCase())} placeholder="CA" /></Field>
+        <Field label="Month"><input value={month} onChange={(e) => setMonth(e.target.value)} placeholder="September 2026" /></Field>
+      </div>
+      <button onClick={runResearch} disabled={loading || !state || !month} className="flex items-center gap-2 px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-sm disabled:opacity-40">
+        <Icon name="filter" size={15} /> {loading ? "Researching…" : "Run Research"}
+      </button>
+      {error && <div className="flex items-center gap-2 text-[#E85D5D] text-sm bg-[#3A2020] border border-[#E85D5D]/40 rounded-md px-3 py-2"><Icon name="alert" size={15} /> {error}</div>}
+      {result && (
+        <div>
+          <div className="text-sm text-[#9AA5B8] mb-2 font-mono">{result.rows.length} row(s) found{result.notes ? ` — ${result.notes}` : ""}</div>
+          {result.rows.length > 0 && (
+            <React.Fragment>
+              <div className="space-y-1 mb-3">
+                {result.rows.map((r, i) => (
+                  <TicketCard key={i} className="px-3 py-2 text-xs font-mono">
+                    <div>{r.priority} · {r.region}/{r.state} · {r.venue} — {r.event_name} — {r.event_date}</div>
+                    {r.source_url && <a href={r.source_url} target="_blank" rel="noreferrer" className="text-[#5FC7E8] break-all">{r.source_url}</a>}
+                  </TicketCard>
+                ))}
+              </div>
+              <button onClick={async () => { try { await onAccept(result.rows); showToast(`Accepted ${result.rows.length} events`, "success"); setResult(null); } catch (err) { showToast(err.message, "error"); } }} className="px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-sm">Bulk-accept into Event Log</button>
+            </React.Fragment>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PricingEntry({ events, onUpdate, onStatusChange, showToast }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const pending = events.filter((e) => e.status === "Needs Pricing" || e.status === "Needs Research");
+  const selected = events.find((e) => e.id === selectedId);
+  const [copied, setCopied] = useState(false);
+  const [local, setLocal] = useState({});
+  useEffect(() => { if (selected) setLocal(selected); }, [selectedId]);
+
+  if (!selected) {
+    return (
+      <div>
+        <h2 className="font-display text-2xl mb-4 text-[#E8A33D]">PRICING ENTRY</h2>
+        {pending.length === 0 ? <EmptyState text="No events awaiting pricing right now." /> : (
+          <div className="grid gap-2 max-w-2xl">
+            {pending.map((e) => (
+              <button key={e.id} onClick={() => setSelectedId(e.id)} className="text-left px-4 py-3 rounded-lg bg-[#1B2028] border border-[#2A3040] hover:border-[#E8A33D] flex items-center justify-between">
+                <div><div className="text-sm font-medium">{e.event_name}</div><div className="text-xs text-[#9AA5B8] font-mono">{e.venue} · {e.state} · {e.event_date}</div></div>
+                <PriorityBadge priority={e.priority} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const proximityRegex = /(\d+(\.\d+)?\s*(mi|mile|miles|min|mins|minute|minutes|ft|feet|km))/i;
+  const hasProximity = proximityRegex.test(local.location_notes || "");
+  const allFilled = PLATFORMS.every((p) => local[p.key] !== "" && local[p.key] !== undefined && local[p.key] !== null) && local.stubhub_price;
+  const readyToMark = allFilled && hasProximity;
+  const setField = (k, v) => setLocal((l) => ({ ...l, [k]: v }));
+  const saveField = async (k, v) => { try { await onUpdate(selected.id, { [k]: v }); } catch (err) { showToast(err.message, "error"); } };
+  const markPriced = async () => { await onStatusChange(selected, "Priced"); };
+  const copyAlert = async () => {
+    const lines = [`ARBITRAGE SIGNAL`, `Venue: ${local.venue} (${local.state})`, `Event: ${local.event_name} - ${local.event_date}`,
+      `StubHub (after fee): ${money(local.stubhub_fee_adjusted_price)}`, `Best buy: ${money(local.best_buy_price)} via ${local.best_buy_platform || "—"}`,
+      `Spread: ${money(local.arbitrage_spread_dollar)} (${local.arbitrage_spread_percent?.toFixed?.(1) ?? "—"}%)`,
+      `Lot: ${local.location_notes || "—"}`, `Source: ${local.source_url || "—"}`].join("\n");
+    await navigator.clipboard.writeText(lines); setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="max-w-3xl">
+      <button onClick={() => setSelectedId(null)} className="text-xs text-[#9AA5B8] hover:text-[#E8A33D] mb-3 font-mono">← back to queue</button>
+      <TicketCard className="p-4 mb-4 border-[#E8A33D]/40">
+        <div className="text-xs font-mono text-[#E8A33D] uppercase mb-2">Matching checklist</div>
+        <ol className="text-xs text-[#9AA5B8] space-y-1 list-decimal list-inside">
+          <li>On StubHub, open ticket options and check the Section dropdown for the exact listed location(s).</li>
+          <li>Search those exact locations across SpotHero, ParkWhiz, Parking.com, and ParkMobile.</li>
+          <li>No exact match? Use the closest, cheapest available option and label it "General Admission / Offsite."</li>
+          <li className="text-[#E8A33D]">Always include proximity in Location Notes (e.g. "0.2 mi walk") — required to mark Priced.</li>
+        </ol>
+      </TicketCard>
+      <TicketCard className="p-5">
+        <div className="flex items-start justify-between mb-4">
+          <div><h2 className="font-display text-2xl">{local.event_name}</h2><p className="text-sm text-[#9AA5B8] font-mono">{local.venue} · {local.state} · {local.event_date}</p></div>
+          <PriorityBadge priority={local.priority} />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="StubHub Lot Name"><input value={local.stubhub_lot_name || ""} onChange={(e) => setField("stubhub_lot_name", e.target.value)} onBlur={(e) => saveField("stubhub_lot_name", e.target.value)} /></Field>
+          <Field label="StubHub Price ($)"><input value={local.stubhub_price ?? ""} onChange={(e) => setField("stubhub_price", e.target.value)} onBlur={(e) => saveField("stubhub_price", e.target.value)} placeholder="e.g. 45.00" /></Field>
+          {PLATFORMS.map((p) => (
+            <Field key={p.key} label={`${p.label} Price ($ or N/A)`}><input value={local[p.key] ?? ""} onChange={(e) => setField(p.key, e.target.value)} onBlur={(e) => saveField(p.key, e.target.value)} placeholder="e.g. 32.50 or N/A" /></Field>
+          ))}
+          <Field label="Location Notes — must include proximity" full>
+            <input value={local.location_notes || ""} onChange={(e) => setField("location_notes", e.target.value)} onBlur={(e) => saveField("location_notes", e.target.value)} placeholder="Lot E Deck - 0.2 mi walk" />
+            {!hasProximity && local.location_notes && <div className="flex items-center gap-1 text-[#E85D5D] text-xs mt-1"><Icon name="alert" size={13} /> No proximity detected.</div>}
+          </Field>
+        </div>
+        <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+          <ComputedTile label="Fee-Adj. StubHub" value={money(local.stubhub_fee_adjusted_price)} />
+          <ComputedTile label="Best Buy (your cost)" value={`${money(local.best_buy_price)}${local.best_buy_platform ? " · " + local.best_buy_platform : ""}`} />
+          <ComputedTile label="Spread $" value={money(local.arbitrage_spread_dollar)} />
+          <ComputedTile label="Spread %" value={local.arbitrage_spread_percent !== null && local.arbitrage_spread_percent !== undefined ? `${Number(local.arbitrage_spread_percent).toFixed(1)}%` : "—"} positive={local.arbitrage_spread_percent > 0} />
+        </div>
+        <MarginCalculator bestBuy={local.best_buy_price} />
+        <div className="flex flex-wrap gap-2 mt-5">
+          <button onClick={markPriced} disabled={!readyToMark} className="flex items-center gap-2 px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-sm disabled:opacity-40"><Icon name="check" size={15} /> Mark as Priced</button>
+          <button onClick={copyAlert} className="flex items-center gap-2 px-4 py-2 rounded-md bg-[#1B2028] border border-[#2A3040] text-sm hover:border-[#E8A33D]"><Icon name={copied ? "check" : "copy"} size={15} /> {copied ? "Copied" : "Copy signal message"}</button>
+        </div>
+        {!allFilled && <p className="text-xs text-[#5A6472] mt-2">Fill all pricing fields (or N/A), then click out of the field to save.</p>}
+        {allFilled && !hasProximity && <p className="text-xs text-[#E85D5D] mt-2">Add proximity to Location Notes to mark as Priced.</p>}
+      </TicketCard>
+    </div>
+  );
+}
+function MarginCalculator({ bestBuy }) {
+  const [margin, setMargin] = useState(10);
+  const suggested = bestBuy !== null && bestBuy !== undefined ? Number(bestBuy) + margin : null;
+  return (
+    <div className="mt-4 bg-[#0D0F14] border border-[#2A3040] rounded-lg p-3">
+      <div className="text-[10px] text-[#5A6472] font-mono uppercase mb-1">Your suggested listing price (your cost + your margin — not a competitor's price)</div>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-[#9AA5B8]">Margin $</span>
+        <input type="number" value={margin} onChange={(e) => setMargin(parseFloat(e.target.value) || 0)} className="w-20 !py-1" />
+        <span className="font-mono text-sm text-[#4CAF6D]">{suggested !== null ? `→ list at ${money(suggested)}` : "enter platform prices first"}</span>
+      </div>
+    </div>
+  );
+}
+function ComputedTile({ label, value, positive }) {
+  return <div className="bg-[#0D0F14] border border-[#2A3040] rounded-lg px-3 py-2"><div className="text-[10px] text-[#5A6472] font-mono uppercase">{label}</div><div className={`font-mono text-sm mt-0.5 ${positive ? "text-[#4CAF6D]" : ""}`}>{value}</div></div>;
+}
+
+function SettingsPanel({ token, showToast }) {
+  const [settings, setSettings] = useState(null);
+  const [testing, setTesting] = useState(false);
+  const load = useCallback(async () => { try { setSettings(await apiCall(token, "/api/settings")); } catch (err) { showToast(err.message, "error"); } }, [token, showToast]);
+  useEffect(() => { load(); }, [load]);
+  if (!settings) return <div className="text-[#5A6472] font-mono text-sm">Loading settings…</div>;
+  const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  const save = async () => {
+    try {
+      const data = await apiCall(token, "/api/settings", { method: "PATCH", body: JSON.stringify({
+        notify_new_event: settings.notify_new_event, notify_priced_positive: settings.notify_priced_positive,
+        only_high_priority: settings.only_high_priority, spread_threshold_percent: settings.spread_threshold_percent,
+        digest_time: settings.digest_time, digest_enabled: settings.digest_enabled }) });
+      setSettings(data); showToast("Settings saved", "success");
+    } catch (err) { showToast(err.message, "error"); }
+  };
+  const testSend = async () => {
+    setTesting(true);
+    try { const res = await apiCall(token, "/api/settings/test-telegram", { method: "POST" }); showToast(res.ok ? "Test message sent to your Telegram group" : `Send failed: ${res.reason}`, res.ok ? "success" : "error"); }
+    catch (err) { showToast(err.message, "error"); } finally { setTesting(false); }
+  };
+  const bool = (v) => v === "true" || v === true;
+  return (
+    <div className="max-w-xl space-y-6">
+      <div><h2 className="font-display text-2xl text-[#E8A33D] mb-1">SETTINGS</h2><p className="text-xs text-[#5A6472]">Telegram sends from your live backend server-side — broadcasts actually go through.</p></div>
+      <div>
+        <h3 className="font-mono text-xs text-[#9AA5B8] uppercase mb-2">Broadcast triggers</h3>
+        <div className="space-y-3">
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bool(settings.notify_new_event)} onChange={(e) => set("notify_new_event", String(e.target.checked))} /> Broadcast when a new event is added</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bool(settings.notify_priced_positive)} onChange={(e) => set("notify_priced_positive", String(e.target.checked))} /> Broadcast when marked Priced with a positive spread</label>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bool(settings.only_high_priority)} onChange={(e) => set("only_high_priority", String(e.target.checked))} /> Only broadcast High priority events</label>
+          <Field label="Minimum spread % threshold"><input type="number" value={settings.spread_threshold_percent} onChange={(e) => set("spread_threshold_percent", e.target.value)} /></Field>
+          <Field label="Daily digest time (24h, server timezone)"><input value={settings.digest_time} onChange={(e) => set("digest_time", e.target.value)} placeholder="08:00" /></Field>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={bool(settings.digest_enabled)} onChange={(e) => set("digest_enabled", String(e.target.checked))} /> Daily digest enabled</label>
+        </div>
+        <div className="flex gap-2 mt-3"><button onClick={testSend} disabled={testing} className="px-3 py-1.5 rounded-md bg-[#1B2028] border border-[#2A3040] text-sm hover:border-[#E8A33D]">{testing ? "Sending…" : "Send test message"}</button></div>
+      </div>
+      <button onClick={save} className="px-4 py-2 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-sm">Save settings</button>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
