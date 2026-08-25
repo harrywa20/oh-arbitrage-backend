@@ -7,7 +7,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -23,7 +23,7 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo, useCallback } = React;
 
 const API_BASE = ""; // same origin - served by this same backend, no CORS needed
@@ -583,6 +583,13 @@ function SettingsPanel({ token, showToast }) {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  const source = document.getElementById("app-source").textContent;
+  const compiled = Babel.transform(source, { presets: ["react"] }).code;
+  const runnable = document.createElement("script");
+  runnable.textContent = compiled;
+  document.body.appendChild(runnable);
 </script>
 </body>
 </html>
