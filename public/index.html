@@ -257,7 +257,7 @@ function App() {
         {view === "log" && <EventLog events={events} loading={loadingEvents} filters={filters} setFilters={setFilters} onStatusChange={handleStatusChange} onImport={bulkImport} onDelete={deleteEvent} showToast={showToast} isAdmin={user?.role === "admin"} />}
         {view === "add" && <AddEventForm defaultAnalyst={user?.email} onAdd={async (ev) => { try { await addEvent(ev); showToast("Event added", "success"); setView("log"); } catch (err) { showToast(err.message, "error"); } }} />}
         {view === "research" && <ResearchPanel token={token} onAccept={bulkImport} showToast={showToast} />}
-        {view === "pricing" && <PricingEntry events={events} onUpdate={updateEvent} onStatusChange={handleStatusChange} showToast={showToast} />}
+        {view === "pricing" && <PricingEntry token={token} events={events} onUpdate={updateEvent} onStatusChange={handleStatusChange} showToast={showToast} />}
         {view === "settings" && user?.role === "admin" && <SettingsPanel token={token} showToast={showToast} />}
         {view === "settings" && user?.role !== "admin" && <EmptyState text="Settings are admin-only." />}
       </main>
@@ -531,13 +531,40 @@ function ResearchPanel({ token, onAccept, showToast }) {
   );
 }
 
-function PricingEntry({ events, onUpdate, onStatusChange, showToast }) {
+function PricingEntry({ token, events, onUpdate, onStatusChange, showToast }) {
   const [selectedId, setSelectedId] = useState(null);
   const pending = events.filter((e) => e.status === "Needs Pricing" || e.status === "Needs Research");
   const selected = events.find((e) => e.id === selectedId);
   const [copied, setCopied] = useState(false);
   const [local, setLocal] = useState({});
+  const [refLots, setRefLots] = useState([]);
+  const [logForm, setLogForm] = useState({ lot_name_or_address: "", platform: "SpotHero", price_seen: "" });
   useEffect(() => { if (selected) setLocal(selected); }, [selectedId]);
+
+  useEffect(() => {
+    if (!selected || !token) return;
+    apiCall(token, `/api/lots?venue=${encodeURIComponent(selected.venue)}`).then(setRefLots).catch(() => setRefLots([]));
+  }, [selected?.id, token]);
+
+  const logReference = async () => {
+    if (!logForm.lot_name_or_address || !logForm.price_seen) return;
+    try {
+      const row = await apiCall(token, "/api/lots", {
+        method: "POST",
+        body: JSON.stringify({
+          venue: selected.venue,
+          lot_name_or_address: logForm.lot_name_or_address,
+          platform: logForm.platform,
+          price_seen: logForm.price_seen,
+          date_checked: todayMDY(),
+          event_context: selected.event_name,
+        }),
+      });
+      setRefLots((prev) => [row, ...prev]);
+      setLogForm({ lot_name_or_address: "", platform: "SpotHero", price_seen: "" });
+      showToast("Logged for future reference", "success");
+    } catch (err) { showToast(err.message, "error"); }
+  };
 
   if (!selected) {
     return (
@@ -584,6 +611,61 @@ function PricingEntry({ events, onUpdate, onStatusChange, showToast }) {
           <li className="text-[#E8A33D]">Always include proximity in Location Notes (e.g. "0.2 mi walk") — required to mark Priced.</li>
         </ol>
       </TicketCard>
+
+      <TicketCard className="p-4 mb-4">
+        <div className="text-xs font-mono text-[#E8A33D] uppercase mb-2">Quick search — opens each platform in a new tab</div>
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: "StubHub", url: `https://www.stubhub.com/secure/search?q=${encodeURIComponent(local.event_name + " parking " + local.venue)}` },
+            { label: "SpotHero", url: `https://spothero.com/search?search_string=${encodeURIComponent(local.venue + ", " + (local.venue_city || "") + " " + local.state)}` },
+            { label: "ParkWhiz", url: `https://www.parkwhiz.com/search/?q=${encodeURIComponent(local.venue + " " + (local.venue_city || ""))}` },
+            { label: "Parking.com", url: `https://www.parking.com/search?q=${encodeURIComponent(local.venue + " " + (local.venue_city || ""))}` },
+            { label: "ParkMobile", url: `https://parkmobile.io/parking?search=${encodeURIComponent(local.venue + " " + (local.venue_city || ""))}` },
+          ].map((p) => (
+            <a key={p.label} href={p.url} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-md bg-[#1B2028] border border-[#2A3040] text-xs hover:border-[#E8A33D]">
+              {p.label} ↗
+            </a>
+          ))}
+        </div>
+        <p className="text-[10px] text-[#5A6472] mt-2">These just save you retyping the search — you still need to find the exact matching lot and read the real price yourself.</p>
+      </TicketCard>
+
+      <TicketCard className="p-4 mb-4">
+        <div className="text-xs font-mono text-[#E8A33D] uppercase mb-2">Reference prices you've logged for {local.venue}</div>
+        {refLots.length === 0 ? (
+          <p className="text-xs text-[#5A6472]">No history yet for this venue — log one below after you check a real price.</p>
+        ) : (
+          <div className="space-y-1 mb-3 max-h-40 overflow-y-auto">
+            {refLots.map((r) => (
+              <div key={r.id} className="flex items-center justify-between text-xs font-mono border-b border-[#2A3040] py-1">
+                <span className="text-[#EDEEF0]">{r.platform} — {r.lot_name_or_address}</span>
+                <span className={r.days_old > 60 ? "text-[#E85D5D]" : "text-[#9AA5B8]"}>
+                  {money(r.price_seen)} · {r.days_old === null ? "?" : `${r.days_old}d old`}{r.days_old > 60 ? " ⚠ stale" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 items-end">
+          <div>
+            <label className="block text-[10px] text-[#9AA5B8] font-mono mb-1">Lot name/address</label>
+            <input value={logForm.lot_name_or_address} onChange={(e) => setLogForm({ ...logForm, lot_name_or_address: e.target.value })} className="w-48" placeholder="659 Aerick St" />
+          </div>
+          <div>
+            <label className="block text-[10px] text-[#9AA5B8] font-mono mb-1">Platform</label>
+            <select value={logForm.platform} onChange={(e) => setLogForm({ ...logForm, platform: e.target.value })}>
+              {["SpotHero", "ParkWhiz", "Parking.com", "ParkMobile", "StubHub"].map((p) => <option key={p}>{p}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-[10px] text-[#9AA5B8] font-mono mb-1">Price you saw ($)</label>
+            <input value={logForm.price_seen} onChange={(e) => setLogForm({ ...logForm, price_seen: e.target.value })} className="w-24" placeholder="52.00" />
+          </div>
+          <button onClick={logReference} className="px-3 py-1.5 rounded-md bg-[#E8A33D] text-[#12151C] font-semibold text-xs">Log it</button>
+        </div>
+        <p className="text-[10px] text-[#5A6472] mt-2">This is a record of what you personally checked, dated \u2014 never live pricing. Always re-verify before acting, especially anything over 60 days old.</p>
+      </TicketCard>
+
       <TicketCard className="p-5">
         <div className="flex items-start justify-between mb-4">
           <div><h2 className="font-display text-2xl">{local.event_name}</h2><p className="text-sm text-[#9AA5B8] font-mono">{local.venue} · {local.state} · {local.event_date}</p></div>
