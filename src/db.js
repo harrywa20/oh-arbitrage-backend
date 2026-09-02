@@ -49,6 +49,22 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Manually-verified reference prices an analyst has actually checked in the past.
+-- This is NEVER auto-generated or derived from another price - it only exists because
+-- a human typed in a real number they saw on a real platform on a real date.
+CREATE TABLE IF NOT EXISTS saved_lots (
+  id TEXT PRIMARY KEY,
+  venue TEXT NOT NULL,
+  lot_name_or_address TEXT NOT NULL,
+  platform TEXT NOT NULL,       -- SpotHero | ParkWhiz | Parking.com | ParkMobile | StubHub
+  price_seen REAL NOT NULL,
+  date_checked TEXT NOT NULL,   -- MM/DD/YYYY - when the analyst actually looked
+  event_context TEXT,           -- e.g. "Rams regular season game" - helps judge relevance later
+  analyst TEXT,
+  notes TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 // seed a first admin user if none exist

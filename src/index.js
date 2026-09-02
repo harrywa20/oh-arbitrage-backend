@@ -7,6 +7,7 @@ import { authRouter } from "./routes/auth.js";
 import { eventsRouter } from "./routes/events.js";
 import { settingsRouter } from "./routes/settings.js";
 import { researchRouter } from "./routes/research.js";
+import { lotsRouter } from "./routes/lots.js";
 import { startDigestCron } from "./cron.js";
 import "./db.js"; // ensures tables + first admin user are created on boot
 
@@ -20,6 +21,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/events", eventsRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/research", researchRouter);
+app.use("/api/lots", lotsRouter);
 
 // serve the real frontend (public/index.html) - same origin as the API, so no CORS/CSP issues
 app.use(express.static(path.join(__dirname, "..", "public")));
